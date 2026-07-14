@@ -78,7 +78,7 @@ echo "Extracting..."
 tar xzf "$TMPDIR/update.tar.gz" -C "$OAR_HOME"
 
 # ── Add to PATH ──
-OAR_BIN="$OAR_HOME/bin/oar"
+OAR_BIN="$OAR_HOME/oar"
 chmod +x "$OAR_BIN"
 
 if ln -sf "$OAR_BIN" /usr/local/bin/oar 2>/dev/null; then
@@ -123,7 +123,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${OAR_HOME}/bin/oar start
+ExecStart=${OAR_HOME}/oar start
 Restart=on-failure
 RestartSec=5
 
