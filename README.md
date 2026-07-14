@@ -33,11 +33,8 @@
 ## Quick Start
 
 ```bash
-# Download the oar binary and add it to your PATH
-# macOS ARM64:
-curl -Lo /usr/local/bin/oar https://github.com/SnowAIGirl/open-agent-router/releases/latest/download/oar-darwin-arm64
-
-chmod +x /usr/local/bin/oar
+# Linux / macOS — one-liner install
+bash <(curl -fsSL https://raw.githubusercontent.com/SnowAIGirl/open-agent-router/master/scripts/install.sh)
 
 # Start the service
 oar start
