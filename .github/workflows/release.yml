@@ -4,6 +4,7 @@
 #
 # 触发: 推 v* tag 或手动 workflow_dispatch
 # 各平台独立构建+发布,不互相等待
+# R2 上传异步执行,不阻塞 build
 #
 # macOS Intel (x64) 需要手动在 Intel Mac 上打包
 
@@ -20,56 +21,6 @@ on:
 
 permissions:
   contents: write
-
-  upload-r2:
-    needs: build
-    if: always() && !cancelled()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: update-*
-          merge-multiple: true
-
-      - name: Upload to Cloudflare R2
-        env:
-          CF_R2_TOKEN: ${{ secrets.CF_R2_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-        shell: bash
-        run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          BUCKET="open-agent-router"
-          BASE="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/${BUCKET}/objects"
-          AUTH="Authorization: Bearer ${CF_R2_TOKEN}"
-
-          if [ -z "$CF_R2_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
-            echo "R2 secrets not set, skipping"
-            exit 0
-          fi
-
-          uploaded=0
-          for f in *.tar.gz *.zip; do
-            [ ! -f "$f" ] && continue
-            key="releases/${TAG}/${f}"
-            echo "Uploading ${f} → ${key}..."
-            resp=$(curl -sf -X PUT "${BASE}/${key}" -H "${AUTH}" --data-binary "@$f" 2>&1)
-            if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
-              echo "  ✓ ${f}"
-              uploaded=$((uploaded + 1))
-            else
-              echo "  ✗ ${f}: ${resp}"
-            fi
-          done
-          echo "Uploaded ${uploaded} assets to R2"
-
-          # latest.json
-          echo "{"latestVersion":"${TAG}","releaseNotes":"Release ${TAG}"}" > /tmp/latest.json
-          resp=$(curl -sf -X PUT "${BASE}/latest.json" -H "${AUTH}"             -H "Content-Type: application/json" --data-binary "@/tmp/latest.json" 2>&1)
-          if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
-            echo "  ✓ latest.json"
-          else
-            echo "  ✗ latest.json: ${resp}"
-          fi
 
 env:
   SOURCE_REPO: SnowAIGirl/open-agent-router-source
@@ -147,7 +98,6 @@ jobs:
         env:
           TAURI_SKIP_CODESIGN: '1'
           TAURI_SKIP_BUILD_BEFORE: '1'
-          APPIMAGE_EXTRACT_AND_RUN: '1'
 
       # ── 发布到当前仓库（公开） ──
       - name: Determine release tag
@@ -167,37 +117,56 @@ jobs:
           PUBLIC_GITHUB_REPO: ${{ github.repository }}
         run: node .github/workflows/publish-release.mjs
 
-      # ── 同步更新包到 R2 ──
-      - name: Upload assets to Cloudflare R2
-        if: env.CF_R2_TOKEN != ''
+      # ── 上传 update 包到 Artifacts（供 upload-r2 job 使用） ──
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: update-${{ matrix.arch-label }}
+          path: release/*.tar.gz
+          if-no-files-found: ignore
+
+  upload-r2:
+    needs: build
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: update-*
+          merge-multiple: true
+
+      - name: Upload to Cloudflare R2
         env:
           CF_R2_TOKEN: ${{ secrets.CF_R2_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         shell: bash
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          SRC="${{ github.workspace }}/release"
+          TAG="${{ inputs.tag || github.ref_name }}"
           BUCKET="open-agent-router"
           BASE="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/${BUCKET}/objects"
-          AUTH="Authorization: Bearer ***"
+          AUTH="Authorization: Bearer ${CF_R2_TOKEN}"
+
+          if [ -z "$CF_R2_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo "R2 secrets not set, skipping"
+            exit 0
+          fi
 
           uploaded=0
-          for f in "$SRC"/*.tar.gz "$SRC"/*.zip; do
+          for f in *.tar.gz *.zip; do
             [ ! -f "$f" ] && continue
-            name=$(basename "$f")
-            key="releases/${TAG}/${name}"
-            echo "Uploading ${name} → ${key}..."
+            key="releases/${TAG}/${f}"
+            echo "Uploading ${f} → ${key}..."
             resp=$(curl -sf -X PUT "${BASE}/${key}" -H "${AUTH}" --data-binary "@$f" 2>&1)
             if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
-              echo "  ✓ ${name}"
+              echo "  ✓ ${f}"
               uploaded=$((uploaded + 1))
             else
-              echo "  ✗ ${name}: ${resp}"
+              echo "  ✗ ${f}: ${resp}"
             fi
           done
           echo "Uploaded ${uploaded} assets to R2"
 
-          # 生成 latest.json
+          # latest.json
           echo "{\"latestVersion\":\"${TAG}\",\"releaseNotes\":\"Release ${TAG}\"}" > /tmp/latest.json
           resp=$(curl -sf -X PUT "${BASE}/latest.json" -H "${AUTH}" \
             -H "Content-Type: application/json" --data-binary "@/tmp/latest.json" 2>&1)
