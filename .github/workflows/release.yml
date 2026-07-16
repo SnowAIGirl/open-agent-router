@@ -21,6 +21,56 @@ on:
 permissions:
   contents: write
 
+  upload-r2:
+    needs: build
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: update-*
+          merge-multiple: true
+
+      - name: Upload to Cloudflare R2
+        env:
+          CF_R2_TOKEN: ${{ secrets.CF_R2_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          BUCKET="open-agent-router"
+          BASE="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/${BUCKET}/objects"
+          AUTH="Authorization: Bearer ${CF_R2_TOKEN}"
+
+          if [ -z "$CF_R2_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo "R2 secrets not set, skipping"
+            exit 0
+          fi
+
+          uploaded=0
+          for f in *.tar.gz *.zip; do
+            [ ! -f "$f" ] && continue
+            key="releases/${TAG}/${f}"
+            echo "Uploading ${f} → ${key}..."
+            resp=$(curl -sf -X PUT "${BASE}/${key}" -H "${AUTH}" --data-binary "@$f" 2>&1)
+            if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
+              echo "  ✓ ${f}"
+              uploaded=$((uploaded + 1))
+            else
+              echo "  ✗ ${f}: ${resp}"
+            fi
+          done
+          echo "Uploaded ${uploaded} assets to R2"
+
+          # latest.json
+          echo "{"latestVersion":"${TAG}","releaseNotes":"Release ${TAG}"}" > /tmp/latest.json
+          resp=$(curl -sf -X PUT "${BASE}/latest.json" -H "${AUTH}"             -H "Content-Type: application/json" --data-binary "@/tmp/latest.json" 2>&1)
+          if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
+            echo "  ✓ latest.json"
+          else
+            echo "  ✗ latest.json: ${resp}"
+          fi
+
 env:
   SOURCE_REPO: SnowAIGirl/open-agent-router-source
 
@@ -129,7 +179,7 @@ jobs:
           SRC="${{ github.workspace }}/release"
           BUCKET="open-agent-router"
           BASE="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/${BUCKET}/objects"
-          AUTH="Authorization: Bearer ${CF_R2_TOKEN}"
+          AUTH="Authorization: Bearer ***"
 
           uploaded=0
           for f in "$SRC"/*.tar.gz "$SRC"/*.zip; do
