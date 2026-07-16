@@ -1,9 +1,5 @@
-
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img alt="Open Agent Router" src="assets/logo-light.svg" width="480">
-  </picture>
+  <img alt="Open Agent Router" src="assets/logo.png" width="480">
 </p>
 
 <p align="center">
