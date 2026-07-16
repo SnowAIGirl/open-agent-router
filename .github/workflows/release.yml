@@ -1,0 +1,158 @@
+# ── OAR 发布流水线（公开仓库版） ──
+# 运行在 SnowAIGirl/open-agent-router（公开）→ 免费 Actions
+# 从 SnowAIGirl/open-agent-router-source（私有）拉取源码
+#
+# 触发: 推 v* tag 或手动 workflow_dispatch
+# 各平台独立构建+发布,不互相等待
+#
+# macOS Intel (x64) 需要手动在 Intel Mac 上打包
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.0.2)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_REPO: SnowAIGirl/open-agent-router-source
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            rust-target: aarch64-apple-darwin
+            arch-label: macos-arm64
+          - os: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            arch-label: linux
+          - os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            arch-label: windows
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          ref: master
+
+      - uses: oven-sh/setup-bun@v2
+        id: bun
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfuse2 libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+          sudo apt-get install -y libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
+
+      - run: npm ci
+      - run: npm --prefix ui ci
+
+      - name: Build release artifacts
+        run: npm run build:release
+        env:
+          BUN_PATH: ${{ steps.bun.outputs.bun-path }}
+
+      - name: Stage Tauri resources
+        shell: bash
+        run: |
+          mkdir -p src-tauri/resources src-tauri/binaries
+          cp -r release/ui-dist src-tauri/resources/ui-dist
+          cp -r release/assets src-tauri/resources/assets
+          cp release/manifest.json src-tauri/resources/manifest.json
+          triple="${{ matrix.rust-target }}"
+          exe=""
+          [ "${{ runner.os }}" = "Windows" ] && exe=".exe"
+          cp "release/oar${exe}" "src-tauri/binaries/oar-${triple}${exe}"
+          chmod +x "src-tauri/binaries/oar-${triple}${exe}" 2>/dev/null || true
+
+      - name: Build desktop app
+        run: npx tauri build
+        env:
+          TAURI_SKIP_CODESIGN: '1'
+          TAURI_SKIP_BUILD_BEFORE: '1'
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+
+      # ── 发布到当前仓库（公开） ──
+      - name: Determine release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          PUBLIC_GITHUB_REPO: ${{ github.repository }}
+        run: node .github/workflows/publish-release.mjs
+
+      # ── 同步更新包到 R2 ──
+      - name: Upload assets to Cloudflare R2
+        if: env.CF_R2_TOKEN != ''
+        env:
+          CF_R2_TOKEN: ${{ secrets.CF_R2_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          SRC="${{ github.workspace }}/release"
+          BUCKET="open-agent-router"
+          BASE="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/${BUCKET}/objects"
+          AUTH="Authorization: Bearer ${CF_R2_TOKEN}"
+
+          uploaded=0
+          for f in "$SRC"/*.tar.gz "$SRC"/*.zip; do
+            [ ! -f "$f" ] && continue
+            name=$(basename "$f")
+            key="releases/${TAG}/${name}"
+            echo "Uploading ${name} → ${key}..."
+            resp=$(curl -sf -X PUT "${BASE}/${key}" -H "${AUTH}" --data-binary "@$f" 2>&1)
+            if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
+              echo "  ✓ ${name}"
+              uploaded=$((uploaded + 1))
+            else
+              echo "  ✗ ${name}: ${resp}"
+            fi
+          done
+          echo "Uploaded ${uploaded} assets to R2"
+
+          # 生成 latest.json
+          echo "{\"latestVersion\":\"${TAG}\",\"releaseNotes\":\"Release ${TAG}\"}" > /tmp/latest.json
+          resp=$(curl -sf -X PUT "${BASE}/latest.json" -H "${AUTH}" \
+            -H "Content-Type: application/json" --data-binary "@/tmp/latest.json" 2>&1)
+          if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
+            echo "  ✓ latest.json"
+          else
+            echo "  ✗ latest.json: ${resp}"
+          fi
