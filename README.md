@@ -32,10 +32,24 @@
 
 ## Quick Start
 
-```bash
-# Linux / macOS — one-liner install
-bash <(curl -fsSL https://raw.githubusercontent.com/SnowAIGirl/open-agent-router/master/scripts/install.sh)
+Choose the fastest source for your network:
 
+**R2 (recommended, fastest)**
+```bash
+bash <(curl -fsSL https://oar-down.snow-agent.com/install.sh)
+```
+
+**GitHub**
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/SnowAIGirl/open-agent-router/master/scripts/install.sh)
+```
+
+**Gitee (China)**
+```bash
+bash <(curl -fsSL https://gitee.com/SnowAIGirl/open-agent-router/raw/master/scripts/install.sh)
+```
+
+```bash
 # Start the service
 oar start
 
