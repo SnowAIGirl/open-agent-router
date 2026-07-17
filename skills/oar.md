@@ -129,7 +129,7 @@ Detects the project by matching `cwd` against project paths. Spawns the agent CL
 ```bash
 oar settings list                           # Show all settings
 oar settings set locale zh-CN               # Change a setting (e.g. locale)
-oar usage [--start-time TS] [--end-time TS] # Query token/cost usage
+oar usage [--start-time TS_MS] [--end-time TS_MS] # Query token/cost usage (TS = unix ms, e.g. `date +%s`000)
 oar activity                                # Show recent proxy activity
 oar vendor                                  # List known vendors
 oar capture                                 # Capture/debug proxy traffic
